@@ -47,13 +47,15 @@ console.log(obfuscated);
 ```
 
 ## Features
-| Feature | Description |
-| InsertJunk | Insert Junk Statements |
-| RenameVariables | Rename Variables To random String |
-| Vmify | Advanced custom VM (bytecode + interpreter) — the core strength |
-| ConstantArray | Constant Array |
-| GlobalMapping | Maps Globals (such as print, _G) to a {[randomId]=Global} table |
-| StringsToExpressions | Make Strings Such as "abc" to "a" .. "b" .. "c" |
-| NumbersToExpressions | Make Numbers Such as 1 to 3 + 200 - 202 |
-| EncryptStrings | Encrypt Strings With XOR |
-| WrapInFunction | Wraps The Whole Codes in a IIFE |
+
+| Feature                  | Description |
+|--------------------------|-------------|
+| InsertJunk               | Inserts meaningless junk statements |
+| RenameVariables          | Renames variables to random strings |
+| Vmify                    | Advanced custom VM (bytecode + interpreter) — core strength |
+| ConstantArray            | Wraps constants into a randomized array |
+| GlobalMapping            | Maps globals (`print`, `_G`, etc.) to a randomized table |
+| StringsToExpressions     | Converts strings like `"abc"` into concatenated expressions |
+| NumbersToExpressions     | Converts numbers into complex arithmetic expressions |
+| EncryptStrings           | Encrypts strings using XOR |
+| WrapInFunction           | Wraps the entire script in an IIFE |

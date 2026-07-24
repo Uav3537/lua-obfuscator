@@ -26,7 +26,7 @@ jobs:
 
       - name: Check Version
         id: check
-        run: |
+        run: |  
           PACKAGE=$(node -p "require('./package.json').name")
           LOCAL=$(node -p "require('./package.json').version")
           PUBLISHED=$(npm view "$PACKAGE" version 2>/dev/null || echo "0.0.0")

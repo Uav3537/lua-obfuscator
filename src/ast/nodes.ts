@@ -403,22 +403,52 @@ export type Type =
   | TypeParenthesized
   | TypeVariadic;
 
+// A "type pack" is Luau's term for the thing that can appear in a generic
+// type-argument slot but isn't itself a single Type: either a reference to a
+// generic pack variable declared as `T...` (TypePackReference), an explicit
+// parenthesized list like `(number, string)` (TypePackExplicit), or a
+// variadic `...T` (reuses TypeVariadic, already used for the same shape in
+// function parameter/return vararg slots).
+export type TypePack = TypeVariadic | TypePackReference | TypePackExplicit;
+
+// A reference to a generic type-pack parameter, e.g. the `T...` in `Foo<T...>`
+// (as opposed to declaring one, which is GenericTypeParameter.isPack).
+export interface TypePackReference extends BaseNode {
+  type: 'TypePackReference';
+  name: string;
+}
+
+// An explicit, parenthesized type-pack literal used as a generic argument,
+// e.g. the `(number, string)` in `Foo<(number, string)>`.
+export interface TypePackExplicit extends BaseNode {
+  type: 'TypePackExplicit';
+  types: Type[];
+  vararg: TypeVariadic | null;
+}
+
 export interface GenericTypeParameter {
   name: string;
+  // true for a generic *type pack* parameter (`<T...>`) as opposed to a
+  // plain generic type parameter (`<T>`). When true, only defaultTypePack
+  // (never defaultType) may be populated.
+  isPack: boolean;
   defaultType: Type | null;
+  defaultTypePack: TypePack | null;
 }
 
 // Represents "multiple returns" for function types, etc. If it's a single type, types.length === 1.
 export interface TypeList {
   types: Type[];
-  // Set when a vararg type pack is appended at the end of the list, e.g. (...T)
-  vararg: TypeVariadic | null;
+  // Set when a vararg type pack is appended at the end of the list — either
+  // an anonymous variadic (...T, e.g. (...T)) or a reference to a named
+  // generic pack parameter (T..., e.g. (T...) -> (), function f(): T...).
+  vararg: TypeVariadic | TypePackReference | null;
 }
 
 export interface TypeReference extends BaseNode {
   type: 'TypeReference';
   name: string; // `Foo` or `Module.Foo` is flattened into name="Module.Foo"
-  typeArguments: Type[]; // Foo<Bar, Baz>
+  typeArguments: Array<Type | TypePack>; // Foo<Bar, Baz>, Foo<T...>, Foo<...string>, Foo<(number, string)>
 }
 
 export interface TypeUnion extends BaseNode {
@@ -440,6 +470,10 @@ export interface TypeFunction extends BaseNode {
   type: 'TypeFunction';
   generics: GenericTypeParameter[];
   parameters: Array<{ name: string | null; type: Type }>;
+  // The trailing `...T` or `T...` parameter, if any, e.g. (...any) -> ...any
+  // or (T...) -> (). Kept separate from `parameters` (matching the
+  // parameter-list parse result), rather than silently dropped.
+  vararg: TypeVariadic | TypePackReference | null;
   returns: TypeList;
 }
 
@@ -447,6 +481,8 @@ export interface TypeTableField {
   // key === null means array form {T}, key: Type means an indexer {[K]: V}, key: string means {name: T}
   key: string | Type | null;
   value: Type;
+  // 'read' | 'write' for { read name: T } / { write name: T }, null when unqualified (the common case, meaning both read and write)
+  access: 'read' | 'write' | null;
 }
 export interface TypeTable extends BaseNode {
   type: 'TypeTable';

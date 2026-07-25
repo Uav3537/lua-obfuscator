@@ -255,6 +255,10 @@ export class Lexer {
       case '"': return '"';
       case "'": return "'";
       case '\n': return '\n';
+      case '\r': {                          // ← 이 case 블록 추가
+        if (this.peek() === '\n') this.advance();
+        return '\n';
+      }
       case 'x': {
         const hex = this.advance() + this.advance();
         return String.fromCharCode(parseInt(hex, 16));

@@ -236,18 +236,30 @@ interface IfExpression extends BaseNode {
     }>;
 }
 type Type = TypeReference | TypeUnion | TypeIntersection | TypeOptional | TypeFunction | TypeTable | TypeLiteralString | TypeLiteralBoolean | TypeTypeof | TypeParenthesized | TypeVariadic;
+type TypePack = TypeVariadic | TypePackReference | TypePackExplicit;
+interface TypePackReference extends BaseNode {
+    type: 'TypePackReference';
+    name: string;
+}
+interface TypePackExplicit extends BaseNode {
+    type: 'TypePackExplicit';
+    types: Type[];
+    vararg: TypeVariadic | null;
+}
 interface GenericTypeParameter {
     name: string;
+    isPack: boolean;
     defaultType: Type | null;
+    defaultTypePack: TypePack | null;
 }
 interface TypeList {
     types: Type[];
-    vararg: TypeVariadic | null;
+    vararg: TypeVariadic | TypePackReference | null;
 }
 interface TypeReference extends BaseNode {
     type: 'TypeReference';
     name: string;
-    typeArguments: Type[];
+    typeArguments: Array<Type | TypePack>;
 }
 interface TypeUnion extends BaseNode {
     type: 'TypeUnion';
@@ -268,11 +280,13 @@ interface TypeFunction extends BaseNode {
         name: string | null;
         type: Type;
     }>;
+    vararg: TypeVariadic | TypePackReference | null;
     returns: TypeList;
 }
 interface TypeTableField {
     key: string | Type | null;
     value: Type;
+    access: 'read' | 'write' | null;
 }
 interface TypeTable extends BaseNode {
     type: 'TypeTable';
@@ -396,4 +410,4 @@ declare function obfuscate(source: string, dialect: DialectName, options: Obfusc
  */
 declare function parse(source: string, dialect: DialectName): Chunk;
 
-export { type AssignmentStatement, type AssignmentTarget, type Attribute, type BaseNode, type BinaryExpression, type BinaryOperator, type Binding, type BindingKind, type BooleanLiteral, type BreakStatement, type CallExpression, type CallStatement, type Chunk, type CompoundAssignmentStatement, type ContinueStatement, type DialectName, type DoStatement, type ElseClause, type ElseifClause, type Expression, type ForGenericStatement, type ForNumericStatement, type FunctionDeclaration, type FunctionParameter, type GeneratorOptions, type GenericTypeParameter, type GotoStatement, type Identifier, type IfClause, type IfExpression, type IfStatement, type IndexExpression, type InterpolatedStringExpression, type LabelStatement, LexError, type LocalStatement, type LogicalExpression, type MemberExpression, type NilLiteral, type NumericLiteral, type ObfuscateOptions, type ParenthesizedExpression, ParseError, type Position, type RepeatStatement, type ReturnStatement, type SourceLocation, type Statement, type StepConfig, type StringCallExpression, type StringLiteral, type TableCallExpression, type TableConstructorExpression, type TableField, type TableKey, type TableKeyString, type TableValue, type Type, type TypeFunction, type TypeIntersection, type TypeList, type TypeLiteralBoolean, type TypeLiteralString, type TypeOptional, type TypeParenthesized, type TypeReference, type TypeTable, type TypeTableField, type TypeTypeof, type TypeUnion, type TypeVariadic, type UnaryExpression, UnknownDialectError, type VarargLiteral, type WhileStatement, generate, obfuscate, parse, resolveScopes };
+export { type AssignmentStatement, type AssignmentTarget, type Attribute, type BaseNode, type BinaryExpression, type BinaryOperator, type Binding, type BindingKind, type BooleanLiteral, type BreakStatement, type CallExpression, type CallStatement, type Chunk, type CompoundAssignmentStatement, type ContinueStatement, type DialectName, type DoStatement, type ElseClause, type ElseifClause, type Expression, type ForGenericStatement, type ForNumericStatement, type FunctionDeclaration, type FunctionParameter, type GeneratorOptions, type GenericTypeParameter, type GotoStatement, type Identifier, type IfClause, type IfExpression, type IfStatement, type IndexExpression, type InterpolatedStringExpression, type LabelStatement, LexError, type LocalStatement, type LogicalExpression, type MemberExpression, type NilLiteral, type NumericLiteral, type ObfuscateOptions, type ParenthesizedExpression, ParseError, type Position, type RepeatStatement, type ReturnStatement, type SourceLocation, type Statement, type StepConfig, type StringCallExpression, type StringLiteral, type TableCallExpression, type TableConstructorExpression, type TableField, type TableKey, type TableKeyString, type TableValue, type Type, type TypeFunction, type TypeIntersection, type TypeList, type TypeLiteralBoolean, type TypeLiteralString, type TypeOptional, type TypePack, type TypePackExplicit, type TypePackReference, type TypeParenthesized, type TypeReference, type TypeTable, type TypeTableField, type TypeTypeof, type TypeUnion, type TypeVariadic, type UnaryExpression, UnknownDialectError, type VarargLiteral, type WhileStatement, generate, obfuscate, parse, resolveScopes };

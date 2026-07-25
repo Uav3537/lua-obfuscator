@@ -409,12 +409,12 @@ print("================================")
         steps: [
             { name: "InsertJunk" },
             { name: "RenameVariables" },
-            { name: "Vmify" },
             { name: "ConstantArray" },
             { name: "GlobalMapping" },
             { name: "StringsToExpressions" },
             { name: "NumbersToExpressions" },
             { name: "EncryptStrings" },
+			{ name: "Vmify" },
             { name: "WrapInFunction" },
         ],
         minify: true,

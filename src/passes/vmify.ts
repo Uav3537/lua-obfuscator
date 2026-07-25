@@ -1896,9 +1896,58 @@ function compileForGeneric(stmt: N.ForGenericStatement, state: CompileState): vo
 }
 
 
+// Compiles a `return` — used both for the chunk's own trailing return (the
+// only place this ever ran before) AND, now, for a `return` reached mid-body
+// via compileStatement (inside an `if`, `for`, `while`, `do`, etc.). Either
+// way it's the same RETURN opcode: the runtime dispatcher's RETURN arm emits
+// a real Lua `return`, which unwinds the whole interpreter loop immediately
+// regardless of where in state.code it's reached, so an "early" return needs
+// no special jump/cleanup handling beyond emitting the instruction in place.
+function compileReturnStatement(stmt: N.ReturnStatement, state: CompileState): void {
+
+  const args = stmt.arguments ?? [];
+  const lastArg = args[args.length - 1];
+
+  // Same "only the last expression expands" rule as call arguments and
+  // multi-assignment: `return a, ...` returns `a` plus EVERY remaining
+  // vararg, and `return a, f()` returns `a` plus EVERY value f() returns
+  // — not just the first of each, unlike every other position in the
+  // list. See the spreadKind doc on the Instr interface.
+  const varargSpread = args.length > 0 && lastArg.type === 'VarargLiteral';
+  const callSpread = !varargSpread && args.length > 0 && lastArg.type === 'CallExpression';
+  const fixedArgs = (varargSpread || callSpread) ? args.slice(0, -1) : args;
+
+  // Fixed convention (kept from earlier versions): the fixed prefix
+  // return values live in registers 0..n-1 regardless of how many
+  // hoisted locals also live there — safe because a RETURN always
+  // unwinds the whole VM loop immediately, so nothing reads those
+  // locals' old values afterward, early or trailing alike.
+  state.allocator.reset(state.regFloor);
+  fixedArgs.forEach((arg, i) => compileExpression(arg, state, i));
+
+  let spreadKind: 0 | 1 | 2 = 0;
+  if (varargSpread) {
+    spreadKind = 1;
+  } else if (callSpread) {
+    // The capturing call's own scratch/arg registers must not alias the
+    // fixed prefix values we just wrote into 0..fixedArgs.length-1.
+    state.allocator.reset(Math.max(state.allocator.high(), fixedArgs.length));
+    const scratch = state.allocator.alloc();
+    compileCallIntoWithCapture(lastArg as N.CallExpression, state, scratch);
+    spreadKind = 2;
+  }
+
+  state.code.push({ op: state.opcodes.RETURN, a: 0, b: 0, c: 0, nargs: fixedArgs.length, spreadKind });
+
+}
+
 function compileStatement(stmt: N.Statement, state: CompileState): void {
 
   switch (stmt.type) {
+
+    case 'ReturnStatement':
+      compileReturnStatement(stmt, state);
+      return;
 
     case 'AssignmentStatement':
       compileAssignment(stmt, state);
@@ -2492,40 +2541,7 @@ Pass<Record<string, never>> =
   }
 
   if (trailingReturn) {
-
-    const args = trailingReturn.arguments ?? [];
-    const lastArg = args[args.length - 1];
-
-    // Same "only the last expression expands" rule as call arguments and
-    // multi-assignment: `return a, ...` returns `a` plus EVERY remaining
-    // vararg, and `return a, f()` returns `a` plus EVERY value f() returns
-    // — not just the first of each, unlike every other position in the
-    // list. See the spreadKind doc on the Instr interface.
-    const varargSpread = args.length > 0 && lastArg.type === 'VarargLiteral';
-    const callSpread = !varargSpread && args.length > 0 && lastArg.type === 'CallExpression';
-    const fixedArgs = (varargSpread || callSpread) ? args.slice(0, -1) : args;
-
-    // Fixed convention (kept from earlier versions): the fixed prefix
-    // return values live in registers 0..n-1 regardless of how many
-    // hoisted locals also live there — safe because this only ever runs
-    // once, right before the chunk ends, so nothing reads those locals'
-    // old values afterward.
-    fixedArgs.forEach((arg, i) => compileExpression(arg, state, i));
-
-    let spreadKind: 0 | 1 | 2 = 0;
-    if (varargSpread) {
-      spreadKind = 1;
-    } else if (callSpread) {
-      // The capturing call's own scratch/arg registers must not alias the
-      // fixed prefix values we just wrote into 0..fixedArgs.length-1.
-      state.allocator.reset(Math.max(state.allocator.high(), fixedArgs.length));
-      const scratch = state.allocator.alloc();
-      compileCallIntoWithCapture(lastArg as N.CallExpression, state, scratch);
-      spreadKind = 2;
-    }
-
-    state.code.push({ op: opcodes.RETURN, a: 0, b: 0, c: 0, nargs: fixedArgs.length, spreadKind });
-
+    compileReturnStatement(trailingReturn, state);
   }
 
   // Resolve every goto against the labels collected while compiling above

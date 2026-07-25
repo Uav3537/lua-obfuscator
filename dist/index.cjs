@@ -281,6 +281,10 @@ var Lexer = class {
         return "'";
       case "\n":
         return "\n";
+      case "\r": {
+        if (this.peek() === "\n") this.advance();
+        return "\n";
+      }
       case "x": {
         const hex = this.advance() + this.advance();
         return String.fromCharCode(parseInt(hex, 16));
@@ -717,7 +721,7 @@ var TypeParser = class extends Cursor {
       const tok = this.advance();
       return { type: "TypeLiteralBoolean", value: tok.value, ...this.finishRange(start) };
     }
-    if (this.checkKeyword("nil")) {
+    if (this.check(128 /* NilLiteral */)) {
       this.advance();
       return { type: "TypeReference", name: "nil", typeArguments: [], ...this.finishRange(start) };
     }
@@ -746,11 +750,70 @@ var TypeParser = class extends Cursor {
     this.expectPunct("<");
     const args = [];
     if (!this.checkPunct(">")) {
-      args.push(this.parseType());
-      while (this.matchPunct(",")) args.push(this.parseType());
+      args.push(this.parseTypeOrTypePackArgument());
+      while (this.matchPunct(",")) args.push(this.parseTypeOrTypePackArgument());
     }
     this.closeAngleBracket();
     return args;
+  }
+  /**
+   * A single entry inside `Foo< ... >` can be an ordinary Type (the common
+   * case) or a type pack, when the corresponding generic parameter was
+   * declared as a pack (`<T...>`). Three type-pack forms are recognized:
+   *
+   *   - `Name...`      a reference to a generic pack variable, e.g. Foo<T...>
+   *   - `...Type`      an explicit variadic pack, e.g. Foo<...string>
+   *   - `(A, B, ...)`  an explicit pack literal, e.g. Foo<(number, string)>
+   *
+   * The parser doesn't track which generics were declared as packs at this
+   * point (that needs semantic info this layer doesn't have), so it decides
+   * purely from local syntax: only the three shapes above parse as a pack —
+   * anything else, including a single parenthesized type `(T)` or a real
+   * function type `(A) -> B`, still parses as an ordinary Type exactly as
+   * before.
+   */
+  parseTypeOrTypePackArgument() {
+    if (this.check(256 /* VarargLiteral */)) {
+      const start = this.advance();
+      if (this.startsType()) {
+        const base2 = this.parseType();
+        return { type: "TypeVariadic", base: base2, ...this.finishRange(start) };
+      }
+      const anyRef = {
+        type: "TypeReference",
+        name: "any",
+        typeArguments: [],
+        ...this.finishRange(start)
+      };
+      return { type: "TypeVariadic", base: anyRef, ...this.finishRange(start) };
+    }
+    if (this.check(8 /* Identifier */) && this.peek(1).type === 256 /* VarargLiteral */) {
+      const start = this.current();
+      const name = this.advance().value;
+      this.advance();
+      return { type: "TypePackReference", name, ...this.finishRange(start) };
+    }
+    if (this.checkPunct("(")) {
+      const start = this.current();
+      const { parameters, vararg } = this.parseFunctionParamList();
+      if (this.matchPunct("->")) {
+        const returns = this.parseReturnTypeList();
+        let fn = { type: "TypeFunction", generics: [], parameters, vararg, returns, ...this.finishRange(start) };
+        while (this.matchPunct("?")) {
+          fn = { type: "TypeOptional", base: fn, ...this.finishRange(start) };
+        }
+        return fn;
+      }
+      if (parameters.length === 1 && !vararg && parameters[0].name === null) {
+        let base2 = { type: "TypeParenthesized", type_: parameters[0].type, ...this.finishRange(start) };
+        while (this.matchPunct("?")) {
+          base2 = { type: "TypeOptional", base: base2, ...this.finishRange(start) };
+        }
+        return base2;
+      }
+      return { type: "TypePackExplicit", types: parameters.map((p) => p.type), vararg, ...this.finishRange(start) };
+    }
+    return this.parseType();
   }
   /**
    * `<`/`>` are lexed as plain Punctuators, so two of them stuck together
@@ -774,37 +837,67 @@ var TypeParser = class extends Cursor {
     this.expectPunct("{");
     const fields = [];
     while (!this.checkPunct("}")) {
+      const access = this.tryParseTableFieldAccessQualifier();
       if (this.checkPunct("[")) {
         this.advance();
         const keyType = this.parseType();
         this.expectPunct("]");
         this.expectPunct(":");
         const valueType = this.parseType();
-        fields.push({ key: keyType, value: valueType });
+        fields.push({ key: keyType, value: valueType, access });
       } else if (this.check(8 /* Identifier */) && this.peek(1).type === 32 /* Punctuator */ && this.peek(1).value === ":") {
         const name = this.advance().value;
         this.advance();
         const valueType = this.parseType();
-        fields.push({ key: name, value: valueType });
+        fields.push({ key: name, value: valueType, access });
       } else {
+        if (access !== null) {
+          this.error(`'${access}' can only qualify a named property or indexer, not the array part of a table type`);
+        }
         const valueType = this.parseType();
-        fields.push({ key: null, value: valueType });
+        fields.push({ key: null, value: valueType, access: null });
       }
       if (!this.matchPunct(",") && !this.matchPunct(";")) break;
     }
     this.expectPunct("}");
     return { type: "TypeTable", fields, ...this.finishRange(start) };
   }
-  /** Having just seen '(': decide whether this is a function type `(A, B) -> C` or a plain parenthesized type `(T)` */
+  /**
+   * `read`/`write` aren't reserved words — they're only meaningful directly
+   * in front of a named property or an indexer inside a table type. So this
+   * only consumes the identifier when it's actually followed by one of those
+   * shapes; otherwise it's a normal field that happens to be named "read" or
+   * "write" (e.g. `{ read: string }`), and nothing is consumed here.
+   */
+  tryParseTableFieldAccessQualifier() {
+    if (!this.check(8 /* Identifier */)) return null;
+    const word = this.current().value;
+    if (word !== "read" && word !== "write") return null;
+    const next = this.peek(1);
+    const looksLikeNamedField = next.type === 8 /* Identifier */ && this.peek(2).type === 32 /* Punctuator */ && this.peek(2).value === ":";
+    const looksLikeIndexer = next.type === 32 /* Punctuator */ && next.value === "[";
+    if (!looksLikeNamedField && !looksLikeIndexer) return null;
+    this.advance();
+    return word;
+  }
+  /** Having just seen '(': decide whether this is a function type `(A, B) -> C` or a plain parenthesized type `(T)`. Also handles a trailing '?' on either form: `(A | B)?`, `((A) -> B)?`. */
   parseParenOrFunctionType() {
     const start = this.current();
     const { parameters, vararg } = this.parseFunctionParamList();
     if (this.matchPunct("->")) {
       const returns = this.parseReturnTypeList();
-      return { type: "TypeFunction", generics: [], parameters, returns, ...this.finishRange(start) };
+      let fn = { type: "TypeFunction", generics: [], parameters, vararg, returns, ...this.finishRange(start) };
+      while (this.matchPunct("?")) {
+        fn = { type: "TypeOptional", base: fn, ...this.finishRange(start) };
+      }
+      return fn;
     }
     if (parameters.length === 1 && !vararg && parameters[0].name === null) {
-      return { type: "TypeParenthesized", type_: parameters[0].type, ...this.finishRange(start) };
+      let paren2 = { type: "TypeParenthesized", type_: parameters[0].type, ...this.finishRange(start) };
+      while (this.matchPunct("?")) {
+        paren2 = { type: "TypeOptional", base: paren2, ...this.finishRange(start) };
+      }
+      return paren2;
     }
     this.error("a parenthesized type without '->' can only contain a single type (if this was meant to be a function type, check that you didn't forget the '->')");
   }
@@ -814,8 +907,7 @@ var TypeParser = class extends Cursor {
     const { parameters, vararg } = this.parseFunctionParamList();
     this.expectPunct("->");
     const returns = this.parseReturnTypeList();
-    void vararg;
-    return { type: "TypeFunction", generics, parameters, returns, ...this.finishRange(start) };
+    return { type: "TypeFunction", generics, parameters, vararg, returns, ...this.finishRange(start) };
   }
   parseFunctionParamList() {
     this.expectPunct("(");
@@ -823,11 +915,17 @@ var TypeParser = class extends Cursor {
     let vararg = null;
     if (!this.checkPunct(")")) {
       for (; ; ) {
+        if (this.check(8 /* Identifier */) && this.peek(1).type === 256 /* VarargLiteral */) {
+          const start = this.current();
+          const name = this.advance().value;
+          this.advance();
+          vararg = { type: "TypePackReference", name, ...this.finishRange(start) };
+          break;
+        }
         if (this.check(256 /* VarargLiteral */)) {
           this.advance();
           const varStart = this.previous();
-          if (this.checkPunct(":")) {
-            this.advance();
+          if (this.startsType()) {
             const base2 = this.parseType();
             vararg = { type: "TypeVariadic", base: base2, ...this.finishRange(varStart) };
           } else {
@@ -856,21 +954,71 @@ var TypeParser = class extends Cursor {
     this.expectPunct(")");
     return { parameters, vararg };
   }
+  /**
+   * Parses a return-type position, which can be:
+   *   - a single bare type: `-> string`
+   *   - a parenthesized tuple: `-> (number, string)`
+   *   - `-> ...T` (variadic)
+   *   - a parenthesized type that turns out to be a function type or an
+   *     optional-wrapped group: `-> (number) -> string`, `-> (A | B)?`
+   */
   parseReturnTypeList() {
     if (this.checkPunct("(")) {
+      const start = this.current();
       const { parameters, vararg } = this.parseFunctionParamList();
+      if (this.checkPunct("->")) {
+        this.advance();
+        const returns = this.parseReturnTypeList();
+        let fn = { type: "TypeFunction", generics: [], parameters, vararg, returns, ...this.finishRange(start) };
+        while (this.matchPunct("?")) {
+          fn = { type: "TypeOptional", base: fn, ...this.finishRange(start) };
+        }
+        return { types: [fn], vararg: null };
+      }
+      if (this.checkPunct("?")) {
+        if (parameters.length !== 1 || vararg || parameters[0].name !== null) {
+          this.error("a parenthesized type without '->' can only contain a single type (if this was meant to be a function type, check that you didn't forget the '->')");
+        }
+        let base2 = { type: "TypeParenthesized", type_: parameters[0].type, ...this.finishRange(start) };
+        while (this.matchPunct("?")) {
+          base2 = { type: "TypeOptional", base: base2, ...this.finishRange(start) };
+        }
+        return { types: [base2], vararg: null };
+      }
       return { types: parameters.map((p) => p.type), vararg };
+    }
+    if (this.check(8 /* Identifier */) && this.peek(1).type === 256 /* VarargLiteral */) {
+      const start = this.current();
+      const name = this.advance().value;
+      this.advance();
+      return { types: [], vararg: { type: "TypePackReference", name, ...this.finishRange(start) } };
     }
     if (this.check(256 /* VarargLiteral */)) {
       const start = this.advance();
-      this.expectPunct(":");
-      const base2 = this.parseType();
-      return { types: [], vararg: { type: "TypeVariadic", base: base2, ...this.finishRange(start) } };
+      if (this.startsType()) {
+        const base2 = this.parseType();
+        return { types: [], vararg: { type: "TypeVariadic", base: base2, ...this.finishRange(start) } };
+      }
+      const anyRef = {
+        type: "TypeReference",
+        name: "any",
+        typeArguments: [],
+        ...this.finishRange(start)
+      };
+      return { types: [], vararg: { type: "TypeVariadic", base: anyRef, ...this.finishRange(start) } };
     }
     const single = this.parseType();
     return { types: [single], vararg: null };
   }
-  // ---- Generic parameter list: <T, U = DefaultType, V...> ----
+  /** Lookahead: could a type start at the current token? Used where a type is optional (e.g. after `...`). */
+  startsType() {
+    if (this.checkPunct("(") || this.checkPunct("{") || this.checkPunct("<")) return true;
+    if (this.check(2 /* StringLiteral */) || this.check(64 /* BooleanLiteral */)) return true;
+    if (this.check(128 /* NilLiteral */) || this.checkKeyword("true") || this.checkKeyword("false") || this.checkKeyword("function")) return true;
+    if (this.check(8 /* Identifier */)) return true;
+    return false;
+  }
+  // ---- Generic parameter list: <T, U = DefaultType, V..., W... = ...number> ----
   parseGenericTypeParameterList() {
     if (!this.checkPunct("<")) return [];
     this.advance();
@@ -886,13 +1034,41 @@ var TypeParser = class extends Cursor {
     const name = this.expectIdentifierName().value;
     if (this.check(256 /* VarargLiteral */)) {
       this.advance();
-      return { name: name + "...", defaultType: null };
+      let defaultTypePack = null;
+      if (this.matchPunct("=")) {
+        defaultTypePack = this.parseTypePackValue();
+      }
+      return { name, isPack: true, defaultType: null, defaultTypePack };
     }
     let defaultType = null;
     if (this.matchPunct("=")) {
       defaultType = this.parseType();
     }
-    return { name, defaultType };
+    return { name, isPack: false, defaultType, defaultTypePack: null };
+  }
+  /**
+   * The value on the right of `=` for a generic *pack* parameter's default,
+   * e.g. the `...number` in `<T... = ...number>`, the `Foo...` in
+   * `<T... = Foo...>`, or the `(number, string)` in `<T... = (number, string)>`.
+   */
+  parseTypePackValue() {
+    if (this.check(256 /* VarargLiteral */)) {
+      const start = this.advance();
+      const base2 = this.startsType() ? this.parseType() : { type: "TypeReference", name: "any", typeArguments: [], ...this.finishRange(start) };
+      return { type: "TypeVariadic", base: base2, ...this.finishRange(start) };
+    }
+    if (this.check(8 /* Identifier */) && this.peek(1).type === 256 /* VarargLiteral */) {
+      const start = this.current();
+      const name = this.advance().value;
+      this.advance();
+      return { type: "TypePackReference", name, ...this.finishRange(start) };
+    }
+    if (this.checkPunct("(")) {
+      const start = this.current();
+      const { parameters, vararg } = this.parseFunctionParamList();
+      return { type: "TypePackExplicit", types: parameters.map((p) => p.type), vararg, ...this.finishRange(start) };
+    }
+    this.error(`expected a type pack (e.g. '...T', 'Name...', or '(A, B)') but found ${this.current().type === 1 /* EOF */ ? "<eof>" : `'${this.current().raw}'`}`);
   }
 };
 
@@ -1817,7 +1993,7 @@ var Resolver = class {
   visitTypeList(list) {
     if (!list) return;
     list.types.forEach((t) => this.visitType(t));
-    if (list.vararg) this.visitType(list.vararg);
+    if (list.vararg) this.visitTypeOrPack(list.vararg);
   }
   visitType(type) {
     if (!type) return;
@@ -1840,6 +2016,7 @@ var Resolver = class {
         break;
       case "TypeFunction":
         type.parameters.forEach((p) => this.visitType(p.type));
+        if (type.vararg) this.visitTypeOrPack(type.vararg);
         this.visitTypeList(type.returns);
         break;
       case "TypeTable":
@@ -1849,9 +2026,24 @@ var Resolver = class {
         }
         break;
       case "TypeReference":
-        type.typeArguments.forEach((t) => this.visitType(t));
+        type.typeArguments.forEach((t) => this.visitTypeOrPack(t));
         break;
       default:
+        break;
+    }
+  }
+  /** A generic type argument can be a plain Type or a TypePack (Foo<T...>, Foo<...string>, Foo<(A, B)>). */
+  visitTypeOrPack(t) {
+    switch (t.type) {
+      case "TypePackReference":
+        break;
+      // just a name into the pack namespace, nothing to resolve
+      case "TypePackExplicit":
+        t.types.forEach((tt) => this.visitType(tt));
+        if (t.vararg) this.visitType(t.vararg);
+        break;
+      default:
+        this.visitType(t);
         break;
     }
   }
@@ -3753,8 +3945,30 @@ function compileForGeneric(stmt, state) {
   for (const j of frame.breakJumps) patchJumpTarget(state, j, exitPc);
   state.regFloor = outerFloor;
 }
+function compileReturnStatement(stmt, state) {
+  const args = stmt.arguments ?? [];
+  const lastArg = args[args.length - 1];
+  const varargSpread = args.length > 0 && lastArg.type === "VarargLiteral";
+  const callSpread = !varargSpread && args.length > 0 && lastArg.type === "CallExpression";
+  const fixedArgs = varargSpread || callSpread ? args.slice(0, -1) : args;
+  state.allocator.reset(state.regFloor);
+  fixedArgs.forEach((arg, i) => compileExpression(arg, state, i));
+  let spreadKind = 0;
+  if (varargSpread) {
+    spreadKind = 1;
+  } else if (callSpread) {
+    state.allocator.reset(Math.max(state.allocator.high(), fixedArgs.length));
+    const scratch = state.allocator.alloc();
+    compileCallIntoWithCapture(lastArg, state, scratch);
+    spreadKind = 2;
+  }
+  state.code.push({ op: state.opcodes.RETURN, a: 0, b: 0, c: 0, nargs: fixedArgs.length, spreadKind });
+}
 function compileStatement(stmt, state) {
   switch (stmt.type) {
+    case "ReturnStatement":
+      compileReturnStatement(stmt, state);
+      return;
     case "AssignmentStatement":
       compileAssignment(stmt, state);
       return;
@@ -4171,22 +4385,7 @@ var vmify = (chunk, ctx) => {
     compileStatement(stmt, state);
   }
   if (trailingReturn) {
-    const args = trailingReturn.arguments ?? [];
-    const lastArg = args[args.length - 1];
-    const varargSpread = args.length > 0 && lastArg.type === "VarargLiteral";
-    const callSpread = !varargSpread && args.length > 0 && lastArg.type === "CallExpression";
-    const fixedArgs = varargSpread || callSpread ? args.slice(0, -1) : args;
-    fixedArgs.forEach((arg, i) => compileExpression(arg, state, i));
-    let spreadKind = 0;
-    if (varargSpread) {
-      spreadKind = 1;
-    } else if (callSpread) {
-      state.allocator.reset(Math.max(state.allocator.high(), fixedArgs.length));
-      const scratch = state.allocator.alloc();
-      compileCallIntoWithCapture(lastArg, state, scratch);
-      spreadKind = 2;
-    }
-    state.code.push({ op: opcodes.RETURN, a: 0, b: 0, c: 0, nargs: fixedArgs.length, spreadKind });
+    compileReturnStatement(trailingReturn, state);
   }
   for (const { name, pc } of state.pendingGotos) {
     const dest = state.labels.get(name);

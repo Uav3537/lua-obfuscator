@@ -234,7 +234,7 @@ class Resolver {
   private visitTypeList(list: N.TypeList | null): void {
     if (!list) return;
     list.types.forEach((t) => this.visitType(t));
-    if (list.vararg) this.visitType(list.vararg);
+    if (list.vararg) this.visitTypeOrPack(list.vararg);
   }
 
   private visitType(type: N.Type | null): void {
@@ -258,6 +258,7 @@ class Resolver {
         break;
       case 'TypeFunction':
         type.parameters.forEach((p) => this.visitType(p.type));
+        if (type.vararg) this.visitTypeOrPack(type.vararg);
         this.visitTypeList(type.returns);
         break;
       case 'TypeTable':
@@ -267,10 +268,25 @@ class Resolver {
         }
         break;
       case 'TypeReference':
-        type.typeArguments.forEach((t) => this.visitType(t));
+        type.typeArguments.forEach((t) => this.visitTypeOrPack(t));
         break;
       default:
         break; // TypeLiteralString / TypeLiteralBoolean: nothing to resolve
+    }
+  }
+
+  /** A generic type argument can be a plain Type or a TypePack (Foo<T...>, Foo<...string>, Foo<(A, B)>). */
+  private visitTypeOrPack(t: N.Type | N.TypePack): void {
+    switch (t.type) {
+      case 'TypePackReference':
+        break; // just a name into the pack namespace, nothing to resolve
+      case 'TypePackExplicit':
+        t.types.forEach((tt) => this.visitType(tt));
+        if (t.vararg) this.visitType(t.vararg);
+        break;
+      default:
+        this.visitType(t as N.Type);
+        break;
     }
   }
 }

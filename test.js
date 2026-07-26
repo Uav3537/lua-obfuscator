@@ -414,6 +414,7 @@ print("================================")
             { name: "StringsToExpressions" },
             { name: "NumbersToExpressions" },
             { name: "EncryptStrings" },
+            { name: "EncryptNumbers" },
 			{ name: "Vmify" },
             { name: "WrapInFunction" },
         ],

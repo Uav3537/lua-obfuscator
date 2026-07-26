@@ -38,6 +38,7 @@ const obfuscated = obfuscate(source, "luaU", {
         { name: "StringsToExpressions" },
         { name: "NumbersToExpressions" },
         { name: "EncryptStrings" },
+        { name: "EncryptNumbers" },
         { name: "WrapInFunction" },
     ],
     minify: true,
@@ -58,4 +59,5 @@ console.log(obfuscated);
 | StringsToExpressions     | Converts strings like `"abc"` into concatenated expressions |
 | NumbersToExpressions     | Converts numbers into complex arithmetic expressions |
 | EncryptStrings           | Encrypts strings using XOR |
+| EncryptNumbers           | Encrypts numbers using XOR |
 | WrapInFunction           | Wraps the entire script in an IIFE |

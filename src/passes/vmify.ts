@@ -1,72 +1,3 @@
-// vmify.ts
-// Lua 5.1 / Luau VMify — v3
-//
-// Compiles a chunk into a small custom bytecode format and emits a new
-// chunk containing: the constant pool table, the bytecode table, a keyed
-// xor helper, and a dispatch-hashed interpreter loop that executes it.
-//
-// v3 additions over v2:
-//   - break / continue, compiled via a per-loop pending-jump-list that's
-//     patched once the loop's "next iteration" pc (continue) and "exit" pc
-//     (break) are known — same mechanism if/elseif chains already used for
-//     their own internal jumps, just tracked per loop frame on a stack so
-//     nested loops route break/continue to the innermost enclosing loop.
-//   - goto / label. Because this VM already flattens every hoisted local
-//     into one persistent register file for the whole chunk (see HOIST),
-//     goto/label are compiled the same way: labels are just named pc's in
-//     one flat map, gotos are JMPs with a placeholder patched once every
-//     statement has been compiled. This is intentionally more permissive
-//     than real Lua's goto-scoping rules (can't jump into a local's scope,
-//     can't jump into a nested block from outside) — consistent with this
-//     file's pre-existing, documented decision to not preserve strict
-//     block-scoping semantics anywhere else either.
-//   - do...end blocks (pure scoping — hoisted the same way if/while bodies
-//     already are, compiled the same way too).
-//   - CompoundAssignmentStatement (+=, -=, *=, /=, %=, ^=, ..=). '//=' is
-//     rejected (see note at compileCompoundAssignment) since there is no
-//     floor-division opcode to desugar it into without silently producing
-//     a non-integer result.
-//   - generic for (for k, v in iter do ... end), compiled against the
-//     standard 3-value iterator protocol (f, s, control), stopping when the
-//     first returned value is nil (not merely falsy — false is a valid
-//     non-terminal iterator value in real Lua/Luau, so this checks equality
-//     against a loaded nil constant rather than truthiness).
-//   - multiple return values / multiple assignment from a single call:
-//     CALL gained `nret` (how many contiguous result registers to fill)
-//     and RETURN gained a value count, so `local a, b = f()` and
-//     `return a, b, c` both work now, not just their single-value forms.
-//   - varargs (...): the main chunk always captures `...` into a runtime
-//     table. `...` used as an ordinary expression yields its first value
-//     (VARARG opcode). `...` used as the LAST argument of a call is
-//     compiled as a true runtime spread (CALL gained a `spread` flag) so
-//     the callee sees however many vararg values actually exist, not a
-//     compile-time-fixed count.
-//   - IfExpression (Luau's `if c then a else b`, optionally with elseif),
-//     compiled as a real branch into the target register, not by eagerly
-//     evaluating every arm.
-//   - InterpolatedStringExpression (Luau `` `a{expr}b` `` string
-//     interpolation), desugared at compile time into a chain of CONCATs.
-//   - TypeAlias statements: N/A — the parser now discards Luau type syntax
-//     (including `type` aliases) entirely, so no TypeAlias node ever
-//     reaches this pass.
-//
-// v4 additions over v3:
-//   - closures / nested function declarations / upvalues. Nested function
-//     BODIES are deliberately NOT bytecode-compiled by this pass (only the
-//     top-level chunk is) — they're embedded as ordinary, un-vmified Lua
-//     AST, so arbitrary nesting depth, self/mutual recursion, and multi-
-//     level upvalue chaining all fall out of real Lua's own closure
-//     semantics for free instead of needing a hand-rolled reentrant VM +
-//     upvalue-chain resolver. The only piece this pass adds is making sure
-//     a captured top-level local lives in a shared box (`upvals[i].v`)
-//     instead of a plain register, addressed identically from the
-//     bytecode (GETUPVAL/SETUPVAL) and from inside the closure itself
-//     (baked in directly as `upvals[i].v` at compile time — see the
-//     CLOSURES section and computeNeededBoxes/rewriteCapturedRefs). See
-//     LIMITATIONS at the bottom for the one case this deliberately still
-//     rejects (a closure capturing a for-loop control variable itself,
-//     since loop variables don't get a fresh binding per iteration here).
-
 import * as N from '../ast/nodes';
 import { parseSnippet } from '../utils/parse-snippet';
 import { resolveScopes } from '../analysis/scope';
@@ -289,16 +220,7 @@ type OpName =
   | 'JMP' | 'JMPIF' | 'JMPIFNOT'
   | 'CALL' | 'RETURN'
   | 'VARARG' | 'TOSTRING'
-  // Closures/upvalues (see the CLOSURES section below). GETUPVAL/SETUPVAL
-  // read/write a captured local through its shared box (`upvals[b+1].v`);
-  // LOADRAW loads an already-built closure value straight out of the raw
-  // (non-keyed) pool — see buildRawPoolDecl.
   | 'GETUPVAL' | 'SETUPVAL' | 'LOADRAW'
-  // Table constructors only. Fills in the LAST array-position field when
-  // it's `...` or a call — same "only the last position gets true
-  // multi-value treatment" rule as call arguments/return lists (see the
-  // spreadKind doc on Instr) — everything a preceding fixed field already
-  // wrote via SETINDEX is untouched; these just append starting at `b`.
   | 'SPREADVARARG' | 'SPREADMULTRET'
   | 'NOP' | 'XOR';
 
@@ -2624,54 +2546,3 @@ Pass<Record<string, never>> =
   return finalChunk;
 
 };
-
-
-// ======================================================
-// LIMITATIONS (fail loudly, never silently drop or mis-compile code)
-// ======================================================
-//
-// Still NOT supported, and will throw rather than silently mis-compile:
-//   - a closure capturing a numeric-for/generic-for LOOP VARIABLE itself
-//     (as opposed to an ordinary local/param, which works — see the
-//     CLOSURES section). This VM hoists loop control variables to ONE
-//     persistent slot for the whole chunk rather than a fresh one per
-//     iteration, so such a closure would see a stale/shared value instead
-//     of "its" iteration's value — rejected loudly at compile time in
-//     compileForNumeric/compileForGeneric instead of shipping that
-//     mismatch quietly. Workaround: copy the loop variable into a plain
-//     local declared inside the loop body and capture that instead.
-//   - goto/label are resolved in one flat, chunk-wide namespace rather
-//     than enforcing real Lua's goto-scoping rules (can't jump into a
-//     local's scope from outside) — this is a deliberate relaxation, not
-//     a bug, and is unrelated to the point below.
-//
-// The following used to be listed here as unsupported; all four were
-// actually closed out by the v3 additions above and are fully compiled,
-// not just parsed — this note used to be stale:
-//   - '//' floor division and '//=' floor-division-assign desugar to the
-//     IDIV opcode (`math.floor(b / c)` at runtime) — see opForBinary and
-//     the BinaryExpression/compileCompoundAssignment cases.
-//   - the numeric `for` loop does not assume a positive step. start/
-//     limit/step are evaluated once, step's sign is captured into
-//     stepNonNegReg up front (matching real Lua's "direction decided
-//     once, before the loop runs" semantics), and the per-iteration
-//     bound check branches between `loopReg <= limitReg` and
-//     `limitReg <= loopReg` off of that — see compileForNumeric.
-//   - InterpolatedStringExpression routes every interpolated value
-//     through the TOSTRING opcode before CONCAT, matching Luau's real
-//     interpolation semantics (booleans/nil/tables stringify instead of
-//     raising a bare-`..` runtime error).
-//   - closures / nested function declarations / upvalues, AND the "two
-//     sibling `local x` in disjoint scopes collide" register bug, were
-//     both closed out by the v4 additions above: `regs`/`boxIndex` are
-//     keyed by bindingId (not name) now, so two genuinely different `x`
-//     bindings never share a slot regardless of whether their names
-//     match — see HOIST and the CLOSURES section.
-//
-// Not a limitation, just worth calling out explicitly: a call used as a
-// non-last argument to another call, or as a non-last element of a
-// return/assignment list, still only contributes its first return value
-// — only the LAST position in an argument list, return list, or
-// multi-assignment right-hand side gets true multi-value / vararg-spread
-// treatment. That's intentional and matches real Lua's own "only the
-// last expression in a list expands" rule, not a gap to fix.

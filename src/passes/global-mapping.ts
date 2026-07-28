@@ -189,7 +189,6 @@ export const globalMapping: Pass<{ globalTableName?: string }> = (chunk, ctx, op
     loc: dummyLoc
   };
 
-  // chunk 맨 앞에 삽입
   if (!chunk.body) chunk.body = [];
   chunk.body.unshift(globalTable);
 

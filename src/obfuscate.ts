@@ -41,6 +41,10 @@ export function obfuscate(source: string, dialect: DialectName, options: Obfusca
 
   for (const step of options.steps) {
     chunk = runStep(chunk, ctx, step);
+    resolveScopes(chunk); // re-resolve after every step: passes can inject new
+    // declarations (synthetic locals, hoisted decoders, etc.) that don't carry
+    // accurate .scope/.bindingId on their own — later passes (esp. Vmify) must
+    // never see stale/inert scope info.
   }
 
   return generate(chunk, { minify: options.minify });

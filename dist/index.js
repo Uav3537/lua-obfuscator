@@ -4513,9 +4513,34 @@ var dummyLoc2 = {
   start: { line: 0, column: 0 },
   end: { line: 0, column: 0 }
 };
+function normalizeFunctionDeclarations(node) {
+  if (!node || typeof node !== "object") return node;
+  if (node.type === "FunctionDeclaration" && !node.isLocal && node.identifier) {
+    const { identifier, ...rest } = node;
+    const target = identifier.type === "MemberExpression" && identifier.indexer === ":" ? { ...identifier, indexer: "." } : identifier;
+    const anonFn = { ...rest, type: "FunctionDeclaration", identifier: null };
+    return {
+      type: "AssignmentStatement",
+      variables: [target],
+      init: [normalizeFunctionDeclarations(anonFn)],
+      range: node.range,
+      loc: node.loc
+    };
+  }
+  for (const key in node) {
+    if (key === "range" || key === "loc") continue;
+    if (Array.isArray(node[key])) {
+      node[key] = node[key].map(normalizeFunctionDeclarations);
+    } else {
+      node[key] = normalizeFunctionDeclarations(node[key]);
+    }
+  }
+  return node;
+}
 var globalMapping = (chunk, ctx, options = {}) => {
   const globalTableName = options.globalTableName ?? "G";
   const keyMap = /* @__PURE__ */ new Map();
+  normalizeFunctionDeclarations(chunk);
   resolveScopes(chunk);
   const transform = (node) => {
     if (!node || typeof node !== "object") return node;
@@ -4666,6 +4691,7 @@ function obfuscate(source, dialect, options) {
   resolveScopes(chunk);
   for (const step of options.steps) {
     chunk = runStep(chunk, ctx, step);
+    resolveScopes(chunk);
   }
   return generate(chunk, { minify: options.minify });
 }

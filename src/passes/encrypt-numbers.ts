@@ -37,11 +37,11 @@ export const encryptNumbers: Pass<Record<string, never>> = (chunk, ctx) => {
   let touched = false;
 
   transformExpressions(chunk, (expr) => {
-    if (expr.type === 'NumericLiteral' && Number.isFinite(expr.value)) {
+    if (expr.type === 'NumericLiteral' && Number.isFinite(expr.value) && !expr.synthetic) {
       touched = true;
       slot += 1;
       const k = key[(slot - 1) % key.length];
-      return callExpr(ident(fnName), [numLit(expr.value + k), numLit(slot)]);
+      return callExpr(ident(fnName), [numLit(expr.value + k, true), numLit(slot, true)]);
     }
     return null;
   });

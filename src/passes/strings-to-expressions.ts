@@ -9,7 +9,11 @@ import { randInt } from '../utils/random';
 import { Pass } from './types';
 
 function stringCharCall(chunkStr: string): N.Expression {
-  const codes = Array.from(chunkStr).map((c) => numLit(c.codePointAt(0)!));
+  // synthetic: true — these are per-character byte codes, not source
+  // literals. NumbersToExpressions/ConstantArray/EncryptNumbers must not
+  // pick these up, or a single long string blows up into thousands of
+  // rebuilt-at-runtime numbers.
+  const codes = Array.from(chunkStr).map((c) => numLit(c.codePointAt(0)!, true));
   return callExpr(memberExpr(ident('string'), 'char'), codes);
 }
 
@@ -36,7 +40,9 @@ function buildStringExpr(value: string, min: number, max: number): N.Expression 
 
   let result: N.Expression | null = null;
   for (const piece of pieces) {
-    const pieceExpr: N.Expression = randInt(0, 1) === 0 ? strLit(piece) : stringCharCall(piece);
+    // synthetic: true — a leftover substring chunk, not a source literal.
+    // Downstream literal passes (EncryptStrings, ConstantArray) skip these.
+    const pieceExpr: N.Expression = randInt(0, 1) === 0 ? strLit(piece, true) : stringCharCall(piece);
     result = result === null ? pieceExpr : binExpr('..', result, pieceExpr);
   }
   return result!;
@@ -46,7 +52,9 @@ export const stringsToExpressions: Pass<{ min?: number; max?: number }> = (chunk
   const min = opts?.min ?? 3;
   const max = Math.max(min, opts?.max ?? 8);
   transformExpressions(chunk, (expr) => {
-    if (expr.type === 'StringLiteral') {
+    // Skip literals already synthesized by an earlier pass — keeps this
+    // pass safe no matter where it sits in the pipeline.
+    if (expr.type === 'StringLiteral' && !expr.synthetic) {
       return buildStringExpr(expr.value, min, max);
     }
     return null;

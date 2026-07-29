@@ -22,12 +22,12 @@ export function varargParam(): N.VarargLiteral {
   return { type: 'VarargLiteral', value: '...', ...base() };
 }
 
-export function numLit(value: number): N.NumericLiteral {
-  return { type: 'NumericLiteral', value, raw: String(value), ...base() };
+export function numLit(value: number, synthetic = false): N.NumericLiteral {
+  return { type: 'NumericLiteral', value, raw: String(value), synthetic, ...base() };
 }
 
-export function strLit(value: string): N.StringLiteral {
-  return { type: 'StringLiteral', value, raw: JSON.stringify(value), ...base() };
+export function strLit(value: string, synthetic = false): N.StringLiteral {
+  return { type: 'StringLiteral', value, raw: JSON.stringify(value), synthetic, ...base() };
 }
 
 export function boolLit(value: boolean): N.BooleanLiteral {

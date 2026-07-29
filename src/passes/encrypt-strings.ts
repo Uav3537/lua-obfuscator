@@ -52,10 +52,10 @@ export const encryptStrings: Pass<Record<string, never>> = (chunk, ctx) => {
   let touched = false;
 
   transformExpressions(chunk, (expr) => {
-    if (expr.type === 'StringLiteral') {
+    if (expr.type === 'StringLiteral' && !expr.synthetic) {
       touched = true;
       const enc = modEncrypt(expr.value, key);
-      return callExpr(ident(fnName), [strLit(enc)]);
+      return callExpr(ident(fnName), [strLit(enc, true)]);
     }
     return null;
   });

@@ -85,10 +85,18 @@ const VALID_LUA_IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
  * scope or Lua's reserved words.
  */
 export function randomVarName(existing: Set<string>): string {
+  // Hex digits are 0-9a-f, so a raw slice starts with a digit ~62.5% of the
+  // time and fails VALID_LUA_IDENTIFIER, forcing a fresh crypto call and
+  // retry. Force the first character to always be a valid identifier start
+  // (a-f, the only letters hex produces) so the loop only ever retries on
+  // an actual name collision, not on this near-certain first-attempt miss.
   let name: string;
   do {
     const len = randInt(5, 10);
-    name = `${randomHex32().slice(0, len)}`;
+    const body = randomHex32().slice(0, len - 1);
+    const firstCharPool = 'abcdef';
+    const first = firstCharPool[randInt(0, firstCharPool.length - 1)];
+    name = first + body;
   } while (!VALID_LUA_IDENTIFIER.test(name) || existing.has(name) || RESERVED.has(name));
   existing.add(name);
   return name;

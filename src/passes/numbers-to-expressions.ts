@@ -25,10 +25,12 @@ function buildNumberExpr(value: number, min: number, max: number): N.Expression 
   const varName = randomVarName(scope);
   const v = ident(varName);
 
-  const stmts: N.Statement[] = [localStmt([ident(varName)], [numLit(initial)])];
+  // synthetic: true — these rebuild the target value, they aren't literals
+  // from the source. EncryptNumbers/ConstantArray must not re-obfuscate them.
+  const stmts: N.Statement[] = [localStmt([ident(varName)], [numLit(initial, true)])];
   for (const d of deltas) {
     const op = d >= 0 ? '-' : '+';
-    stmts.push(assignStmt([ident(varName)], [binExpr(op, v, numLit(Math.abs(d)))]));
+    stmts.push(assignStmt([ident(varName)], [binExpr(op, v, numLit(Math.abs(d), true))]));
   }
   stmts.push(returnStmt([v]));
 
@@ -40,7 +42,11 @@ export const numbersToExpressions: Pass<{ min?: number; max?: number }> = (chunk
   const min = opts?.min ?? 3;
   const max = Math.max(min, opts?.max ?? 8);
   transformExpressions(chunk, (expr) => {
-    if (expr.type === 'NumericLiteral' && Number.isFinite(expr.value)) {
+    // Skip literals already synthesized by an earlier pass (e.g. character
+    // codes from StringsToExpressions, or index arithmetic from
+    // ConstantArray) — otherwise a single long string or a pass reorder
+    // turns into thousands of rebuilt-at-runtime numbers.
+    if (expr.type === 'NumericLiteral' && Number.isFinite(expr.value) && !expr.synthetic) {
       return buildNumberExpr(expr.value, min, max);
     }
     return null;

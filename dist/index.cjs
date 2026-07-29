@@ -2393,7 +2393,10 @@ function randomVarName(existing) {
   let name;
   do {
     const len = randInt(5, 10);
-    name = `${randomHex32().slice(0, len)}`;
+    const body = randomHex32().slice(0, len - 1);
+    const firstCharPool = "abcdef";
+    const first = firstCharPool[randInt(0, firstCharPool.length - 1)];
+    name = first + body;
   } while (!VALID_LUA_IDENTIFIER.test(name) || existing.has(name) || RESERVED.has(name));
   existing.add(name);
   return name;
@@ -2735,11 +2738,11 @@ function ident(name) {
 function varargParam() {
   return { type: "VarargLiteral", value: "...", ...base() };
 }
-function numLit(value) {
-  return { type: "NumericLiteral", value, raw: String(value), ...base() };
+function numLit(value, synthetic = false) {
+  return { type: "NumericLiteral", value, raw: String(value), synthetic, ...base() };
 }
-function strLit(value) {
-  return { type: "StringLiteral", value, raw: JSON.stringify(value), ...base() };
+function strLit(value, synthetic = false) {
+  return { type: "StringLiteral", value, raw: JSON.stringify(value), synthetic, ...base() };
 }
 function boolLit(value) {
   return { type: "BooleanLiteral", value, ...base() };
@@ -2806,10 +2809,10 @@ function buildNumberExpr(value, min, max) {
   const scope = /* @__PURE__ */ new Set();
   const varName = randomVarName(scope);
   const v = ident(varName);
-  const stmts = [localStmt([ident(varName)], [numLit(initial)])];
+  const stmts = [localStmt([ident(varName)], [numLit(initial, true)])];
   for (const d of deltas) {
     const op = d >= 0 ? "-" : "+";
-    stmts.push(assignStmt([ident(varName)], [binExpr(op, v, numLit(Math.abs(d)))]));
+    stmts.push(assignStmt([ident(varName)], [binExpr(op, v, numLit(Math.abs(d), true))]));
   }
   stmts.push(returnStmt([v]));
   const fn = funcExpr([], stmts);
@@ -2819,7 +2822,7 @@ var numbersToExpressions = (chunk, _ctx, opts) => {
   const min = opts?.min ?? 3;
   const max = Math.max(min, opts?.max ?? 8);
   transformExpressions(chunk, (expr) => {
-    if (expr.type === "NumericLiteral" && Number.isFinite(expr.value)) {
+    if (expr.type === "NumericLiteral" && Number.isFinite(expr.value) && !expr.synthetic) {
       return buildNumberExpr(expr.value, min, max);
     }
     return null;
@@ -2829,7 +2832,7 @@ var numbersToExpressions = (chunk, _ctx, opts) => {
 
 // src/passes/strings-to-expressions.ts
 function stringCharCall(chunkStr) {
-  const codes = Array.from(chunkStr).map((c) => numLit(c.codePointAt(0)));
+  const codes = Array.from(chunkStr).map((c) => numLit(c.codePointAt(0), true));
   return callExpr(memberExpr(ident("string"), "char"), codes);
 }
 function splitInto(s, parts) {
@@ -2853,7 +2856,7 @@ function buildStringExpr(value, min, max) {
   const pieces = splitInto(value, steps);
   let result = null;
   for (const piece of pieces) {
-    const pieceExpr = randInt(0, 1) === 0 ? strLit(piece) : stringCharCall(piece);
+    const pieceExpr = randInt(0, 1) === 0 ? strLit(piece, true) : stringCharCall(piece);
     result = result === null ? pieceExpr : binExpr("..", result, pieceExpr);
   }
   return result;
@@ -2862,7 +2865,7 @@ var stringsToExpressions = (chunk, _ctx, opts) => {
   const min = opts?.min ?? 3;
   const max = Math.max(min, opts?.max ?? 8);
   transformExpressions(chunk, (expr) => {
-    if (expr.type === "StringLiteral") {
+    if (expr.type === "StringLiteral" && !expr.synthetic) {
       return buildStringExpr(expr.value, min, max);
     }
     return null;
@@ -2915,10 +2918,10 @@ var encryptStrings = (chunk, ctx) => {
   const keyName = randomVarName(names);
   let touched = false;
   transformExpressions(chunk, (expr) => {
-    if (expr.type === "StringLiteral") {
+    if (expr.type === "StringLiteral" && !expr.synthetic) {
       touched = true;
       const enc = modEncrypt(expr.value, key);
-      return callExpr(ident(fnName), [strLit(enc)]);
+      return callExpr(ident(fnName), [strLit(enc, true)]);
     }
     return null;
   });
@@ -2932,11 +2935,18 @@ var encryptStrings = (chunk, ctx) => {
 // src/passes/constant-array.ts
 var constantArray = (chunk) => {
   const pool = [];
-  const slotOf = /* @__PURE__ */ new Map();
+  const slotByValue = /* @__PURE__ */ new Map();
+  const slotByOccurrence = [];
   transformExpressions(chunk, (expr) => {
-    if (expr.type === "StringLiteral" || expr.type === "NumericLiteral") {
-      pool.push(expr);
-      slotOf.set(expr, pool.length - 1);
+    if ((expr.type === "StringLiteral" || expr.type === "NumericLiteral") && !expr.synthetic) {
+      const key = `${expr.type}:${expr.type === "StringLiteral" ? expr.value : expr.value}`;
+      let slot = slotByValue.get(key);
+      if (slot === void 0) {
+        slot = pool.length;
+        pool.push(expr);
+        slotByValue.set(key, slot);
+      }
+      slotByOccurrence.push(slot);
       return null;
     }
     return null;
@@ -2952,13 +2962,13 @@ var constantArray = (chunk) => {
   const offset = randInt(1, 50);
   const arrayFields = order.map((originalSlot) => tableValue(pool[originalSlot]));
   const decl = localStmt([ident(arrName)], [tableCtor(arrayFields)]);
-  let slotCounter = 0;
+  let occurrenceIndex = 0;
   transformExpressions(chunk, (expr) => {
-    if (expr.type === "StringLiteral" || expr.type === "NumericLiteral") {
-      const originalSlot = slotCounter++;
+    if ((expr.type === "StringLiteral" || expr.type === "NumericLiteral") && !expr.synthetic) {
+      const originalSlot = slotByOccurrence[occurrenceIndex++];
       const physicalIndex = physicalIndexOf.get(originalSlot);
       const shownIndex = physicalIndex - offset;
-      const indexExprNode = offset === 0 ? numLit(physicalIndex) : binExpr("+", numLit(shownIndex), numLit(offset));
+      const indexExprNode = offset === 0 ? numLit(physicalIndex, true) : binExpr("+", numLit(shownIndex, true), numLit(offset, true));
       return indexExpr(ident(arrName), paren(indexExprNode));
     }
     return expr;
@@ -4723,11 +4733,11 @@ var encryptNumbers = (chunk, ctx) => {
   let slot = 0;
   let touched = false;
   transformExpressions(chunk, (expr) => {
-    if (expr.type === "NumericLiteral" && Number.isFinite(expr.value)) {
+    if (expr.type === "NumericLiteral" && Number.isFinite(expr.value) && !expr.synthetic) {
       touched = true;
       slot += 1;
       const k = key[(slot - 1) % key.length];
-      return callExpr(ident(fnName), [numLit(expr.value + k), numLit(slot)]);
+      return callExpr(ident(fnName), [numLit(expr.value + k, true), numLit(slot, true)]);
     }
     return null;
   });

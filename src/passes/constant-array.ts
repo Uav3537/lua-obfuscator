@@ -11,12 +11,25 @@ import { Pass } from './types';
 
 export const constantArray: Pass<Record<string, never>> = (chunk) => {
   const pool: N.Expression[] = [];
-  const slotOf = new Map<N.Expression, number>();
+  // Dedupe by value: without this, every occurrence of a repeated string/
+  // number gets its own array slot AND its own pair of index-arithmetic
+  // NumericLiterals at the call site, which is wasted work and (if a
+  // literal-expansion pass runs later) a multiplier on the blow-up.
+  const slotByValue = new Map<string, number>();
+  // originalSlot (by occurrence, in walk order) -> pooled slot, so the
+  // second walk below can map each site back to its (possibly shared) slot.
+  const slotByOccurrence: number[] = [];
 
   transformExpressions(chunk, (expr) => {
-    if (expr.type === 'StringLiteral' || expr.type === 'NumericLiteral') {
-      pool.push(expr);
-      slotOf.set(expr, pool.length - 1);
+    if ((expr.type === 'StringLiteral' || expr.type === 'NumericLiteral') && !expr.synthetic) {
+      const key = `${expr.type}:${expr.type === 'StringLiteral' ? expr.value : expr.value}`;
+      let slot = slotByValue.get(key);
+      if (slot === undefined) {
+        slot = pool.length;
+        pool.push(expr);
+        slotByValue.set(key, slot);
+      }
+      slotByOccurrence.push(slot);
       return null; // rewritten in the second pass below, once slots are shuffled
     }
     return null;
@@ -38,15 +51,19 @@ export const constantArray: Pass<Record<string, never>> = (chunk) => {
   const arrayFields = order.map((originalSlot) => tableValue(pool[originalSlot]));
   const decl = localStmt([ident(arrName)], [tableCtor(arrayFields)]);
 
-  let slotCounter = 0;
+  let occurrenceIndex = 0;
   transformExpressions(chunk, (expr) => {
-    if (expr.type === 'StringLiteral' || expr.type === 'NumericLiteral') {
-      const originalSlot = slotCounter++;
+    if ((expr.type === 'StringLiteral' || expr.type === 'NumericLiteral') && !expr.synthetic) {
+      const originalSlot = slotByOccurrence[occurrenceIndex++];
       const physicalIndex = physicalIndexOf.get(originalSlot)!;
       // physicalIndex = shown_index + offset, so shown_index = physicalIndex - offset
       const shownIndex = physicalIndex - offset;
+      // synthetic: true — index arithmetic, not a source literal. Skipped by
+      // NumbersToExpressions/EncryptNumbers regardless of pipeline order.
       const indexExprNode =
-        offset === 0 ? numLit(physicalIndex) : binExpr('+', numLit(shownIndex), numLit(offset));
+        offset === 0
+          ? numLit(physicalIndex, true)
+          : binExpr('+', numLit(shownIndex, true), numLit(offset, true));
       return indexExpr(ident(arrName), paren(indexExprNode));
     }
     return expr;

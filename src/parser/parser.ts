@@ -151,6 +151,7 @@ export class Parser extends TypeParser {
     this.advance(); // 'for'
     const firstNameTok = this.expectIdentifierName();
     const firstVar = this.identifierFromToken(firstNameTok, 'local', false);
+    this.parseOptionalTypeAnnotation(); // Luau: 'for i: number = ...' / 'for k: string, v: T in ...'
 
     if (this.matchPunct('=')) {
       // for i = start, end [, step] do ... end
@@ -168,7 +169,10 @@ export class Parser extends TypeParser {
     // for a, b, c in explist do ... end
     const variables: Identifier[] = [firstVar];
     while (this.matchPunct(',')) {
-      variables.push(this.identifierFromToken(this.expectIdentifierName(), 'local', false));
+      const varTok = this.expectIdentifierName();
+      const id = this.identifierFromToken(varTok, 'local', false);
+      this.parseOptionalTypeAnnotation();
+      variables.push(id);
     }
     this.expectKeyword('in');
     const iterators = this.parseExpressionList();
@@ -176,6 +180,46 @@ export class Parser extends TypeParser {
     const body = this.parseBlock();
     this.expectKeyword('end');
     return { type: 'ForGenericStatement', variables, iterators, body, ...this.finishRange(start) };
+  }
+
+  /**
+   * [':' Type] — Luau-only variable type annotation, consumed but discarded.
+   * Shared by local-variable declarations, function parameters, and for-loop
+   * variables (numeric and generic); types are stripped entirely, not just
+   * omitted from codegen, so nothing needs to reference the parsed Type.
+   */
+  private parseOptionalTypeAnnotation(): void {
+    if (this.checkPunct(':')) {
+      this.advance();
+      if (!this.dialect.typeAnnotations) {
+        this.error(`type annotations are Luau-only syntax (current dialect: ${this.dialect.name})`);
+      }
+      this.parseType();
+    }
+  }
+
+  /**
+   * [':' (Name'...' | Type)] — the vararg parameter's own annotation, e.g.
+   * '...: number' (each vararg value is a number) or '...: T...' (a
+   * reference to a generic type pack declared in '<T...>'). The 'Name...'
+   * form is a type PACK, not an ordinary Type, and parseType() alone doesn't
+   * consume the trailing '...' — that's the distinct grammar production
+   * TypeParser already implements for this exact shape elsewhere (see
+   * parseFunctionParamList's vararg handling), so it's replicated narrowly
+   * here rather than routed through parseOptionalTypeAnnotation.
+   */
+  private parseVarargTypeAnnotation(): void {
+    if (!this.checkPunct(':')) return;
+    this.advance();
+    if (!this.dialect.typeAnnotations) {
+      this.error(`type annotations are Luau-only syntax (current dialect: ${this.dialect.name})`);
+    }
+    if (this.check(TokenType.Identifier) && this.peek(1).type === TokenType.VarargLiteral) {
+      this.advance(); // pack name
+      this.advance(); // '...'
+      return;
+    }
+    this.parseType();
   }
 
   private parseFunctionStatement(): FunctionDeclaration {
@@ -243,13 +287,7 @@ export class Parser extends TypeParser {
         this.expectPunct('>');
       }
 
-      if (this.checkPunct(':')) {
-        this.advance();
-        if (!this.dialect.typeAnnotations) {
-          this.error(`type annotations are Luau-only syntax (current dialect: ${this.dialect.name})`);
-        }
-        this.parseType(); // consumed for valid syntax, but intentionally not attached to the AST — Luau types are ignored entirely, not just stripped at codegen
-      }
+      this.parseOptionalTypeAnnotation(); // consumed for valid syntax, but intentionally not attached to the AST — Luau types are ignored entirely, not just stripped at codegen
 
       variables.push(id);
       if (!this.matchPunct(',')) break;
@@ -404,25 +442,13 @@ export class Parser extends TypeParser {
           hasVararg = true;
           const varargNode: VarargLiteral = { type: 'VarargLiteral', value: '...', ...this.finishRange(varTok, varTok) };
           parameters.push(varargNode);
-          if (this.checkPunct(':')) {
-            this.advance();
-            if (!this.dialect.typeAnnotations) {
-              this.error(`type annotations are Luau-only syntax (current dialect: ${this.dialect.name})`);
-            }
-            this.parseType(); // consumed, not attached to the AST — types are ignored entirely
-          }
+          this.parseVarargTypeAnnotation(); // consumed, not attached to the AST — types are ignored entirely
           break; // vararg is always the last element in the parameter list
         }
 
         const nameTok = this.expectIdentifierName();
         const id = this.identifierFromToken(nameTok, 'parameter', false);
-        if (this.checkPunct(':')) {
-          this.advance();
-          if (!this.dialect.typeAnnotations) {
-            this.error(`type annotations are Luau-only syntax (current dialect: ${this.dialect.name})`);
-          }
-          this.parseType(); // consumed, not attached to the AST — types are ignored entirely
-        }
+        this.parseOptionalTypeAnnotation(); // consumed, not attached to the AST — types are ignored entirely
         parameters.push(id);
         if (!this.matchPunct(',')) break;
       }

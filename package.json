@@ -23,7 +23,8 @@
   },
   "scripts": {
     "test": "node test.js",
-    "build": "tsup"
+    "build": "tsup",
+    "testlua": "node testlua/index.js"
   },
   "files": [
     "dist"

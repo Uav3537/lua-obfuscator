@@ -4459,7 +4459,20 @@ var vmify = (chunk, ctx) => {
   const dialect = ctx.dialect.name;
   const runtimeSource = buildRuntimeSource(names, opcodes, keySeed);
   const runtimeChunk = parseSnippet(runtimeSource, dialect);
-  const VMIFY_DEBUG = false;
+  const VMIFY_DEBUG_JSON = process.env.VMIFY_DEBUG_JSON === "1";
+  if (VMIFY_DEBUG_JSON) {
+    const inv = {};
+    for (const k of Object.keys(opcodes)) inv[opcodes[k]] = k;
+    const fs = require("fs");
+    fs.writeFileSync("/tmp/vmify_debug.json", JSON.stringify({
+      code: state.code.map((ins, pc) => ({ ...ins, name: inv[ins.op], pc })),
+      pool: pool.values,
+      keySeed,
+      usedGlobals: Array.from(state.usedGlobals),
+      boxCount: boxIndex.size
+    }, null, 2));
+  }
+  const VMIFY_DEBUG = true;
   if (VMIFY_DEBUG) {
     const inv = {};
     for (const k of Object.keys(opcodes)) inv[opcodes[k]] = k;

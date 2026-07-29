@@ -1,3 +1,10 @@
+var __require = /* @__PURE__ */ ((x) => typeof require !== "undefined" ? require : typeof Proxy !== "undefined" ? new Proxy(x, {
+  get: (a, b) => (typeof require !== "undefined" ? require : a)[b]
+}) : x)(function(x) {
+  if (typeof require !== "undefined") return require.apply(this, arguments);
+  throw Error('Dynamic require of "' + x + '" is not supported');
+});
+
 // src/lexer/tokens.ts
 var LiteralTypes = 2 /* StringLiteral */ | 16 /* NumericLiteral */ | 64 /* BooleanLiteral */ | 128 /* NilLiteral */ | 256 /* VarargLiteral */;
 var KEYWORDS = /* @__PURE__ */ new Set([
@@ -4427,7 +4434,20 @@ var vmify = (chunk, ctx) => {
   const dialect = ctx.dialect.name;
   const runtimeSource = buildRuntimeSource(names, opcodes, keySeed);
   const runtimeChunk = parseSnippet(runtimeSource, dialect);
-  const VMIFY_DEBUG = false;
+  const VMIFY_DEBUG_JSON = process.env.VMIFY_DEBUG_JSON === "1";
+  if (VMIFY_DEBUG_JSON) {
+    const inv = {};
+    for (const k of Object.keys(opcodes)) inv[opcodes[k]] = k;
+    const fs = __require("fs");
+    fs.writeFileSync("/tmp/vmify_debug.json", JSON.stringify({
+      code: state.code.map((ins, pc) => ({ ...ins, name: inv[ins.op], pc })),
+      pool: pool.values,
+      keySeed,
+      usedGlobals: Array.from(state.usedGlobals),
+      boxCount: boxIndex.size
+    }, null, 2));
+  }
+  const VMIFY_DEBUG = true;
   if (VMIFY_DEBUG) {
     const inv = {};
     for (const k of Object.keys(opcodes)) inv[opcodes[k]] = k;

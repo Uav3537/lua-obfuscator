@@ -2518,17 +2518,6 @@ Pass<Record<string, never>> =
   const runtimeSource = buildRuntimeSource(names, opcodes, keySeed);
   const runtimeChunk = parseSnippet(runtimeSource, dialect);
 
-  const VMIFY_DEBUG = false;
-  if (VMIFY_DEBUG) {
-    const inv: Record<number, string> = {};
-    for (const k of Object.keys(opcodes) as (keyof typeof opcodes)[]) inv[opcodes[k]] = k;
-    state.code.forEach((ins, pc) => {
-      console.error(
-        `pc=${pc} ${inv[ins.op]}(${ins.op}) a=${ins.a} b=${ins.b} c=${ins.c} nargs=${ins.nargs} spreadKind=${ins.spreadKind} nret=${ins.nret} captureMultret=${ins.captureMultret}`
-      );
-    });
-  }
-
   const finalChunk: N.Chunk = {
     ...chunk,
     body: [

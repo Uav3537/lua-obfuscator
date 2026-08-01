@@ -192,7 +192,7 @@ export class Generator {
       case 'Identifier':
         return expr.name;
       case 'StringLiteral':
-        return printStringLiteral(expr.value);
+        return expr.literalText ?? printStringLiteral(expr.value);
       case 'NumericLiteral':
         return formatNumber(expr.value);
       case 'BooleanLiteral':
@@ -293,6 +293,28 @@ export function formatNumber(n: number): string {
   return n.toString();
 }
 
+/**
+ * Prints a Luau string literal from a raw byte array (0-255 each), NOT from
+ * Unicode codepoints. Used for binary/encrypted payloads (e.g. EncryptStrings)
+ * where every value is an exact byte that must round-trip through
+ * string.byte()/string.char() unchanged. Unlike printStringLiteral, this never
+ * treats a value as a multi-byte Unicode codepoint - every byte >= 128 is
+ * escaped as \\ddd so it can't be misinterpreted as part of a UTF-8 sequence.
+ */
+export function printByteStringLiteral(bytes: number[]): string {
+  let out = '"';
+  for (const b of bytes) {
+    if (b === '"'.charCodeAt(0)) out += '\\"';
+    else if (b === '\\'.charCodeAt(0)) out += '\\\\';
+    else if (b === 10) out += '\\n';
+    else if (b === 13) out += '\\r';
+    else if (b === 9) out += '\\t';
+    else if (b < 32 || b >= 127) out += `\\${String(b).padStart(3, '0')}`;
+    else out += String.fromCharCode(b);
+  }
+  return out + '"';
+}
+
 export function printStringLiteral(value: string): string {
   let out = '"';
   for (const ch of value) {
@@ -302,7 +324,7 @@ export function printStringLiteral(value: string): string {
     else if (ch === '\n') out += '\\n';
     else if (ch === '\r') out += '\\r';
     else if (ch === '\t') out += '\\t';
-    else if (code < 32 || code >= 127) out += `\\${String(code).padStart(3, '0')}`;
+    else if (code < 32 || code === 127) out += `\\${String(code).padStart(3, '0')}`;
     else out += ch;
   }
   return out + '"';

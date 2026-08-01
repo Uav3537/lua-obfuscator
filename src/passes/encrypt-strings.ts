@@ -8,6 +8,7 @@ import { transformExpressions } from '../utils/walk';
 import { parseSnippet } from '../utils/parse-snippet';
 import { callExpr, ident, strLit } from '../ast/builders';
 import { randInt, randomVarName } from '../utils/random';
+import { printByteStringLiteral } from '../codegen/generator';
 import { Pass, PassContext } from './types';
 
 function buildDecryptHelper(fnName: string, keyName: string, key: number[], dialect: PassContext['dialect']): N.Statement[] {
@@ -32,13 +33,17 @@ function buildDecryptHelper(fnName: string, keyName: string, key: number[], dial
   return parseSnippet(src, dialect.name).body;
 }
 
-function modEncrypt(value: string, key: number[]): string {
-  const bytes = Array.from(value).map((c) => c.codePointAt(0)! & 0xff);
-  let out = '';
+// Encrypts the UTF-8 byte representation of `value` (not its UTF-16
+// codepoints) so multi-byte characters (e.g. Korean text) round-trip
+// correctly. Luau strings are plain byte arrays, so the decrypt() runtime
+// helper just needs to hand back these exact bytes - Roblox/Luau then treats
+// the result as UTF-8 text automatically.
+function modEncrypt(value: string, key: number[]): number[] {
+  const bytes = Array.from(new TextEncoder().encode(value));
+  const out: number[] = new Array(bytes.length);
   for (let i = 0; i < bytes.length; i++) {
     const k = key[i % key.length];
-    const enc = (bytes[i] + k) % 256;
-    out += String.fromCharCode(enc);
+    out[i] = (bytes[i] + k) % 256;
   }
   return out;
 }
@@ -54,8 +59,13 @@ export const encryptStrings: Pass<Record<string, never>> = (chunk, ctx) => {
   transformExpressions(chunk, (expr) => {
     if (expr.type === 'StringLiteral' && !expr.synthetic) {
       touched = true;
-      const enc = modEncrypt(expr.value, key);
-      return callExpr(ident(fnName), [strLit(enc, true)]);
+      const encBytes = modEncrypt(expr.value, key);
+      const literalText = printByteStringLiteral(encBytes);
+      // `value` here is a best-effort JS-string stand-in for the encrypted
+      // bytes (only used if some other pass re-inspects .value); the actual
+      // emitted source always comes from literalText, which is byte-exact.
+      const encValue = encBytes.map((b) => String.fromCharCode(b)).join('');
+      return callExpr(ident(fnName), [strLit(encValue, true, literalText)]);
     }
     return null;
   });

@@ -248,6 +248,12 @@ export interface StringLiteral extends BaseNode {
   type: 'StringLiteral';
   value: string;
   raw: string;
+  // When set, generator.ts prints this exact (already-quoted) Luau source
+  // text instead of recomputing it from `value` via printStringLiteral.
+  // Used for binary/encrypted payloads (see printByteStringLiteral) where
+  // `value` holds raw bytes 0-255 rather than Unicode text, so the normal
+  // codepoint-based escaping would corrupt it.
+  literalText?: string;
   // True when this literal was synthesized by an earlier obfuscation pass
   // (e.g. a leftover chunk from StringsToExpressions) rather than coming
   // from the original source. Literal-transform passes (StringsToExpressions,

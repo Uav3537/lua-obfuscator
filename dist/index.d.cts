@@ -137,6 +137,7 @@ interface StringLiteral extends BaseNode {
     type: 'StringLiteral';
     value: string;
     raw: string;
+    literalText?: string;
     synthetic?: boolean;
 }
 interface NumericLiteral extends BaseNode {

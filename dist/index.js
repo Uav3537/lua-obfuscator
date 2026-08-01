@@ -1,10 +1,3 @@
-var __require = /* @__PURE__ */ ((x) => typeof require !== "undefined" ? require : typeof Proxy !== "undefined" ? new Proxy(x, {
-  get: (a, b) => (typeof require !== "undefined" ? require : a)[b]
-}) : x)(function(x) {
-  if (typeof require !== "undefined") return require.apply(this, arguments);
-  throw Error('Dynamic require of "' + x + '" is not supported');
-});
-
 // src/lexer/tokens.ts
 var LiteralTypes = 2 /* StringLiteral */ | 16 /* NumericLiteral */ | 64 /* BooleanLiteral */ | 128 /* NilLiteral */ | 256 /* VarargLiteral */;
 var KEYWORDS = /* @__PURE__ */ new Set([
@@ -2212,7 +2205,7 @@ ${this.indent()}`;
       case "Identifier":
         return expr.name;
       case "StringLiteral":
-        return printStringLiteral(expr.value);
+        return expr.literalText ?? printStringLiteral(expr.value);
       case "NumericLiteral":
         return formatNumber(expr.value);
       case "BooleanLiteral":
@@ -2302,6 +2295,19 @@ function formatNumber(n) {
   if (Number.isInteger(n)) return n.toString();
   return n.toString();
 }
+function printByteStringLiteral(bytes) {
+  let out = '"';
+  for (const b of bytes) {
+    if (b === '"'.charCodeAt(0)) out += '\\"';
+    else if (b === "\\".charCodeAt(0)) out += "\\\\";
+    else if (b === 10) out += "\\n";
+    else if (b === 13) out += "\\r";
+    else if (b === 9) out += "\\t";
+    else if (b < 32 || b >= 127) out += `\\${String(b).padStart(3, "0")}`;
+    else out += String.fromCharCode(b);
+  }
+  return out + '"';
+}
 function printStringLiteral(value) {
   let out = '"';
   for (const ch of value) {
@@ -2311,7 +2317,7 @@ function printStringLiteral(value) {
     else if (ch === "\n") out += "\\n";
     else if (ch === "\r") out += "\\r";
     else if (ch === "	") out += "\\t";
-    else if (code < 32 || code >= 127) out += `\\${String(code).padStart(3, "0")}`;
+    else if (code < 32 || code === 127) out += `\\${String(code).padStart(3, "0")}`;
     else out += ch;
   }
   return out + '"';
@@ -2716,8 +2722,8 @@ function varargParam() {
 function numLit(value, synthetic = false) {
   return { type: "NumericLiteral", value, raw: String(value), synthetic, ...base() };
 }
-function strLit(value, synthetic = false) {
-  return { type: "StringLiteral", value, raw: JSON.stringify(value), synthetic, ...base() };
+function strLit(value, synthetic = false, literalText) {
+  return { type: "StringLiteral", value, raw: JSON.stringify(value), literalText, synthetic, ...base() };
 }
 function boolLit(value) {
   return { type: "BooleanLiteral", value, ...base() };
@@ -2877,12 +2883,11 @@ function buildDecryptHelper(fnName, keyName, key, dialect) {
   return parseSnippet(src, dialect.name).body;
 }
 function modEncrypt(value, key) {
-  const bytes = Array.from(value).map((c) => c.codePointAt(0) & 255);
-  let out = "";
+  const bytes = Array.from(new TextEncoder().encode(value));
+  const out = new Array(bytes.length);
   for (let i = 0; i < bytes.length; i++) {
     const k = key[i % key.length];
-    const enc = (bytes[i] + k) % 256;
-    out += String.fromCharCode(enc);
+    out[i] = (bytes[i] + k) % 256;
   }
   return out;
 }
@@ -2895,8 +2900,10 @@ var encryptStrings = (chunk, ctx) => {
   transformExpressions(chunk, (expr) => {
     if (expr.type === "StringLiteral" && !expr.synthetic) {
       touched = true;
-      const enc = modEncrypt(expr.value, key);
-      return callExpr(ident(fnName), [strLit(enc, true)]);
+      const encBytes = modEncrypt(expr.value, key);
+      const literalText = printByteStringLiteral(encBytes);
+      const encValue = encBytes.map((b) => String.fromCharCode(b)).join("");
+      return callExpr(ident(fnName), [strLit(encValue, true, literalText)]);
     }
     return null;
   });
@@ -4434,29 +4441,6 @@ var vmify = (chunk, ctx) => {
   const dialect = ctx.dialect.name;
   const runtimeSource = buildRuntimeSource(names, opcodes, keySeed);
   const runtimeChunk = parseSnippet(runtimeSource, dialect);
-  const VMIFY_DEBUG_JSON = process.env.VMIFY_DEBUG_JSON === "1";
-  if (VMIFY_DEBUG_JSON) {
-    const inv = {};
-    for (const k of Object.keys(opcodes)) inv[opcodes[k]] = k;
-    const fs = __require("fs");
-    fs.writeFileSync("/tmp/vmify_debug.json", JSON.stringify({
-      code: state.code.map((ins, pc) => ({ ...ins, name: inv[ins.op], pc })),
-      pool: pool.values,
-      keySeed,
-      usedGlobals: Array.from(state.usedGlobals),
-      boxCount: boxIndex.size
-    }, null, 2));
-  }
-  const VMIFY_DEBUG = true;
-  if (VMIFY_DEBUG) {
-    const inv = {};
-    for (const k of Object.keys(opcodes)) inv[opcodes[k]] = k;
-    state.code.forEach((ins, pc) => {
-      console.error(
-        `pc=${pc} ${inv[ins.op]}(${ins.op}) a=${ins.a} b=${ins.b} c=${ins.c} nargs=${ins.nargs} spreadKind=${ins.spreadKind} nret=${ins.nret} captureMultret=${ins.captureMultret}`
-      );
-    });
-  }
   const finalChunk = {
     ...chunk,
     body: [
